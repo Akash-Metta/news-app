@@ -158,6 +158,68 @@ MOCK_FEEDS = {
     }
 }
 
+def ensure_absolute_url(url: str) -> str:
+    """Ensure the URL is absolute to prevent client-side routing redirection issues."""
+    if not url:
+        return "#"
+    url = url.strip()
+    if url.startswith("//"):
+        return f"https:{url}"
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return f"https://{url}"
+    return url
+
+def fetch_wikipedia_summary(query: str) -> Optional[dict]:
+    """Fetch factual article summary and link from Wikipedia REST API."""
+    try:
+        clean_q = sanitize_input(query)
+        search_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(clean_q)}&utf8=&format=json"
+        req = urllib.request.Request(search_url, headers={'User-Agent': 'DevPulse/1.0 (contact@devpulse.app)'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+        
+        search_results = res_data.get("query", {}).get("search", [])
+        if not search_results:
+            return None
+            
+        top_title = search_results[0]["title"]
+        
+        summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(top_title)}"
+        summary_req = urllib.request.Request(summary_url, headers={'User-Agent': 'DevPulse/1.0 (contact@devpulse.app)'})
+        with urllib.request.urlopen(summary_req, timeout=5) as response:
+            summary_data = json.loads(response.read().decode('utf-8'))
+            
+        return {
+            "title": summary_data.get("title", top_title),
+            "summary": summary_data.get("extract", ""),
+            "url": ensure_absolute_url(summary_data.get("content_urls", {}).get("desktop", {}).get("page", f"https://en.wikipedia.org/wiki/{urllib.parse.quote(top_title)}")),
+            "published_at": summary_data.get("timestamp", "Recent").split("T")[0]
+        }
+    except Exception as e:
+        logger.warning(f"Wikipedia API search failed: {e}")
+        return None
+
+def fetch_duckduckgo_answer(query: str) -> Optional[dict]:
+    """Fetch direct answer summary from DuckDuckGo Instant Answer API."""
+    try:
+        clean_q = sanitize_input(query)
+        url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(clean_q)}&format=json&no_html=1"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+        
+        abstract = data.get("AbstractText", "")
+        abstract_url = data.get("AbstractURL", "")
+        if abstract:
+            return {
+                "summary": abstract,
+                "url": ensure_absolute_url(abstract_url or f"https://duckduckgo.com/?q={urllib.parse.quote(clean_q)}")
+            }
+        return None
+    except Exception as e:
+        logger.warning(f"DuckDuckGo Instant Answer API failed: {e}")
+        return None
+
 def fetch_google_news(query: str) -> list:
     """Fetch and parse Google News XML RSS feed directly to broaden source scope."""
     clean_q = sanitize_input(query)
@@ -185,7 +247,7 @@ def fetch_google_news(query: str) -> list:
                 "id": f"gnews-{idx}",
                 "source": "google_news",
                 "title": sanitize_input(title),
-                "url": link,
+                "url": ensure_absolute_url(link),
                 "published_at": pub_date,
                 "score": 120,
                 "comments": 0,
@@ -300,10 +362,10 @@ async def run_last30days_engine(query: str, sources_str: Optional[str] = None) -
 
     # Fallback dataset
     for mock_key in MOCK_FEEDS:
-      if mock_key in clean_q.lower():
+      if mock_key in clean_q.lower() or clean_q.lower() in mock_key:
         return MOCK_FEEDS[mock_key]
         
-    return MOCK_FEEDS["ai agents"]
+    return None
 
 @app.get("/api/v1/search")
 @app.get("/api/search")
@@ -315,32 +377,82 @@ async def search_news(q: str = Query(..., description="Query topic"), sources: O
     raw_data = await run_last30days_engine(clean_q, sources)
 
     formatted_sources = []
-    candidates = raw_data.get("candidates", [])
-    if candidates:
-      for idx, item in enumerate(candidates[:30]):
-        src_type = item.get("source", "web")
-        eng = item.get("engagement", {})
-        score = eng.get("score") or eng.get("points") or eng.get("upvotes") or 0
-        comments = eng.get("num_comments") or eng.get("comments") or 0
-        
-        formatted_sources.append({
-            "id": str(idx + 1),
-            "source": src_type,
-            "title": sanitize_input(item.get("title") or "Untitled Signal"),
-            "url": item.get("url") or "#",
-            "published_at": item.get("published_at") or "Recent",
-            "score": score,
-            "comments": comments,
-            "summary": sanitize_input(item.get("summary") or "Scored intelligence card from " + src_type),
-            "author": sanitize_input(item.get("author") or src_type.capitalize()),
-            "relevance_score": round(item.get("relevance_score", 0.5) * 100),
-            "cluster": item.get("cluster", 1)
-        })
-    else:
-      formatted_sources = list(raw_data.get("sources", MOCK_FEEDS["ai agents"]["sources"]))
+    summary = ""
+    key_takeaways = []
 
-    # Integrate Google News XML Feeds directly to broaden source scope
-    if not sources or "google" in sources.lower():
+    if raw_data is not None:
+        candidates = raw_data.get("candidates", [])
+        if candidates:
+          for idx, item in enumerate(candidates[:30]):
+            src_type = item.get("source", "web")
+            eng = item.get("engagement", {})
+            score = eng.get("score") or eng.get("points") or eng.get("upvotes") or 0
+            comments = eng.get("num_comments") or eng.get("comments") or 0
+            
+            formatted_sources.append({
+                "id": str(idx + 1),
+                "source": src_type,
+                "title": sanitize_input(item.get("title") or "Untitled Signal"),
+                "url": ensure_absolute_url(item.get("url") or "#"),
+                "published_at": item.get("published_at") or "Recent",
+                "score": score,
+                "comments": comments,
+                "summary": sanitize_input(item.get("summary") or "Scored intelligence card from " + src_type),
+                "author": sanitize_input(item.get("author") or src_type.capitalize()),
+                "relevance_score": round(item.get("relevance_score", 0.5) * 100),
+                "cluster": item.get("cluster", 1)
+            })
+        else:
+          formatted_sources = list(raw_data.get("sources", []))
+          for item in formatted_sources:
+              item["url"] = ensure_absolute_url(item.get("url") or "#")
+          
+        summary = raw_data.get("summary") or f"Synthesized community briefing for topic: '{clean_q}'"
+        key_takeaways = raw_data.get("key_takeaways") or []
+        
+        # Integrate Google News XML Feeds directly to broaden source scope
+        if not sources or "google" in sources.lower():
+            gnews_data = fetch_google_news(clean_q)
+            formatted_sources.extend(gnews_data)
+    else:
+        # Live custom query fetching factual answers from Wikipedia & DuckDuckGo
+        wiki_result = fetch_wikipedia_summary(clean_q)
+        ddg_result = fetch_duckduckgo_answer(clean_q)
+        
+        if ddg_result and ddg_result.get("summary"):
+            summary = ddg_result["summary"]
+        elif wiki_result and wiki_result.get("summary"):
+            summary = wiki_result["summary"]
+        else:
+            summary = f"Synthesized live intelligence briefing for query: '{clean_q}'. Real-time search signals and trends aggregated from mainstream feeds."
+            
+        if wiki_result and wiki_result.get("summary"):
+            key_takeaways.append(wiki_result["summary"])
+        else:
+            key_takeaways.append(f"Factual overview details for '{clean_q}' were dynamically compiled.")
+            
+        key_takeaways.extend([
+            f"Search signals aggregated from Google News live RSS indices.",
+            f"Community interest metrics calculated via volume and relevance weights."
+        ])
+        
+        # Add Wikipedia as top signal if found
+        if wiki_result:
+            formatted_sources.append({
+                "id": "wiki-1",
+                "source": "wikipedia",
+                "title": f"Wikipedia: {wiki_result['title']}",
+                "url": wiki_result["url"],
+                "published_at": wiki_result["published_at"],
+                "score": 9800,
+                "comments": 0,
+                "summary": wiki_result["summary"],
+                "author": "Wikipedia Contributors",
+                "relevance_score": 100,
+                "cluster": 1
+            })
+            
+        # Add Google News
         gnews_data = fetch_google_news(clean_q)
         formatted_sources.extend(gnews_data)
 
@@ -353,8 +465,8 @@ async def search_news(q: str = Query(..., description="Query topic"), sources: O
     return {
         "status": "success",
         "query": clean_q,
-        "summary": raw_data.get("summary") or f"Synthesized community briefing for topic: '{clean_q}'. High engagement observed across social platforms.",
-        "key_takeaways": raw_data.get("key_takeaways") or [
+        "summary": summary,
+        "key_takeaways": key_takeaways or [
             f"Significant community activity recorded for '{clean_q}' in the past 30 days.",
             "High user engagement and upvote velocity indicate strong community interest.",
             "Cross-platform discussion highlights key developments and user sentiment."

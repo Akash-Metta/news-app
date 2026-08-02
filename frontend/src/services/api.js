@@ -198,10 +198,34 @@ export async function searchNews(query, sources = null) {
       .then(res => res.ok ? res.json() : null)
       .catch(() => null);
 
-    const [hnData, githubData] = await Promise.all([hnPromise, githubPromise]);
+    // Wikipedia is fully CORS-enabled using origin=*
+    const wikiPromise = fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(cleanQ)}&utf8=&format=json&origin=*`)
+      .then(res => res.ok ? res.json() : null)
+      .catch(() => null);
+
+    const [hnData, githubData, wikiData] = await Promise.all([hnPromise, githubPromise, wikiPromise]);
 
     const results = [];
     
+    // Parse real Wikipedia Articles
+    if (wikiData && wikiData.query && wikiData.query.search) {
+      wikiData.query.search.slice(0, 10).forEach((item, idx) => {
+        results.push({
+          id: `wiki-${item.pageid || idx}`,
+          source: "wikipedia",
+          title: `Wikipedia: ${item.title}`,
+          url: `https://en.wikipedia.org/wiki/${encodeURIComponent(item.title)}`,
+          published_at: item.timestamp ? item.timestamp.split('T')[0] : "Recent",
+          score: 1000 - idx,
+          comments: 0,
+          summary: item.snippet.replace(/<\/?[^>]+(>|$)/g, "") + "...", // strip HTML tags
+          author: "Wikipedia Contributors",
+          relevance_score: Math.max(50, 98 - idx),
+          cluster: 1
+        });
+      });
+    }
+
     // Parse real Hacker News Stories
     if (hnData && hnData.hits) {
       hnData.hits.slice(0, 15).forEach((hit, idx) => {
@@ -216,7 +240,7 @@ export async function searchNews(query, sources = null) {
           comments: hit.num_comments || 0,
           summary: `Legitimate community discussion on Hacker News analyzing ${hit.title}. Thread includes insights from active developers.`,
           author: hit.author || "hn_user",
-          relevance_score: Math.max(50, 98 - idx),
+          relevance_score: Math.max(50, 94 - idx),
           cluster: 1
         });
       });
@@ -235,7 +259,7 @@ export async function searchNews(query, sources = null) {
           comments: item.forks_count || 0,
           summary: item.description || `Legitimate codebase hosted on GitHub. Project developed by ${item.owner ? item.owner.login : 'open-source community'} with ${item.stargazers_count} stargazers.`,
           author: item.owner ? item.owner.login : "github",
-          relevance_score: Math.max(50, 96 - idx),
+          relevance_score: Math.max(50, 92 - idx),
           cluster: 2
         });
       });
@@ -255,12 +279,12 @@ export async function searchNews(query, sources = null) {
 
     if (filteredResults.length > 0) {
       const topItem = filteredResults[0];
-      const summary = `Synthesized live community intelligence briefing for "${cleanQ}". Top signal observed on ${topItem.source.toUpperCase()} titled "${topItem.title}" with a high engagement score of ${topItem.score.toLocaleString()}. High relevance indicators show growing interest.`;
+      const summary = `Synthesized live community intelligence briefing for "${cleanQ}". Top signal observed on ${topItem.source.toUpperCase()} titled "${topItem.title}". High relevance indicators show active query matching.`;
       
       const key_takeaways = [
-        `Live Hacker News discussions reveal active debate surrounding implementation options for "${cleanQ}".`,
-        `GitHub repositories show growing developer support with multiple active forks and contributions.`,
-        `Community consensus indicates strong adoption trends and integration velocity in developer workflows.`
+        `Wikipedia resources compiled direct overview mappings for "${cleanQ}".`,
+        `Hacker News discussions reveal active debate surrounding implementation options for "${cleanQ}".`,
+        `GitHub repositories show growing developer support with multiple active forks and contributions.`
       ];
 
       return {

@@ -5,6 +5,8 @@ export default function AudioBriefing({ activeTopic, briefingSummary }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [tick, setTick] = useState(0);
+  const [duration, setDuration] = useState(30);
+  const [currentTime, setCurrentTime] = useState(0);
 
   // Sync tick counter for sine-wave animation when playing
   useEffect(() => {
@@ -19,18 +21,44 @@ export default function AudioBriefing({ activeTopic, briefingSummary }) {
     return () => clearInterval(animInterval);
   }, [isPlaying]);
 
+  const cleanTextForSpeech = (text) => {
+    if (!text) return "";
+    let clean = text;
+    // Remove HTML tags
+    clean = clean.replace(/<\/?[^>]+(>|$)/g, "");
+    // Decode HTML entities
+    try {
+      const doc = new DOMParser().parseFromString(clean, 'text/html');
+      clean = doc.body.textContent || clean;
+    } catch (e) {}
+    // Remove brackets with numbers (citations e.g. [1], [2])
+    clean = clean.replace(/\[\d+\]/g, "");
+    clean = clean.replace(/\[citation needed\]/gi, "");
+    // Remove parentheticals (pronunciations/birthdates) to keep it concise and readable
+    clean = clean.replace(/\([^)]*\)/g, "");
+    // Remove URLs
+    clean = clean.replace(/https?:\/\/[^\s]+/g, "");
+    // Remove extra whitespace
+    clean = clean.replace(/\s+/g, " ");
+    return clean.trim();
+  };
+
   useEffect(() => {
     let interval;
+    let timeInterval;
     if (isPlaying) {
-      // Initialize speech synthesis narration
       window.speechSynthesis.cancel();
-      const narrationText = `Pulse 30 executive briefing for ${activeTopic}. ${briefingSummary || "Preparing community intelligence feeds."}`;
+      
+      const cleanSummary = cleanTextForSpeech(briefingSummary);
+      const narrationText = `DevPulse briefing for ${activeTopic}. ${cleanSummary || "No summary details are available at this moment."}`;
+      
       const utterance = new SpeechSynthesisUtterance(narrationText);
-      utterance.rate = 1.05; // Slightly faster for dynamic feel
+      utterance.rate = 1.05; // Slightly faster for natural feel
       
       utterance.onend = () => {
         setIsPlaying(false);
         setProgress(0);
+        setCurrentTime(0);
       };
       utterance.onerror = () => {
         setIsPlaying(false);
@@ -38,7 +66,14 @@ export default function AudioBriefing({ activeTopic, briefingSummary }) {
       
       window.speechSynthesis.speak(utterance);
 
-      // Waveform / progress bar simulation (30s duration)
+      // Dynamically calculate speech duration (average 150 words per minute / 2.5 words per second)
+      const wordCount = narrationText.split(/\s+/).length;
+      const estimatedDuration = Math.max(5, Math.round(wordCount / 2.5)); // Minimum 5s
+      setDuration(estimatedDuration);
+      setCurrentTime(0);
+
+      const stepMs = (estimatedDuration * 1000) / 100;
+
       interval = setInterval(() => {
         setProgress((prev) => {
           if (prev >= 100) {
@@ -48,16 +83,34 @@ export default function AudioBriefing({ activeTopic, briefingSummary }) {
           }
           return prev + 1;
         });
-      }, 300);
+      }, stepMs);
+
+      timeInterval = setInterval(() => {
+        setCurrentTime((prev) => {
+          if (prev >= estimatedDuration) {
+            clearInterval(timeInterval);
+            return estimatedDuration;
+          }
+          return prev + 1;
+        });
+      }, 1000);
     } else {
       window.speechSynthesis.cancel();
+      setCurrentTime(0);
     }
 
     return () => {
       clearInterval(interval);
+      clearInterval(timeInterval);
       window.speechSynthesis.cancel();
     };
   }, [isPlaying, activeTopic, briefingSummary]);
+
+  const formatTime = (secs) => {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
 
   return (
     <div className="glass-panel" style={{ padding: '16px 20px', marginBottom: '24px', background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.12) 0%, rgba(168, 85, 247, 0.12) 100%)', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
@@ -91,11 +144,11 @@ export default function AudioBriefing({ activeTopic, briefingSummary }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Headphones size={15} color="var(--accent-cyan)" />
               <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--accent-cyan)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                AI Audio Briefing Narrator
+                AI Voice Briefing Summary
               </span>
             </div>
             <h4 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>
-              30-Second Summary: {activeTopic}
+              Summary overview: {activeTopic}
             </h4>
           </div>
         </div>
@@ -134,9 +187,9 @@ export default function AudioBriefing({ activeTopic, briefingSummary }) {
         </div>
 
         {/* Right Stats */}
-        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '12px', minWidth: '80px', justifyContent: 'flex-end' }}>
           <Volume2 size={16} />
-          <span>{isPlaying ? '0:14 / 0:30' : '0:00 / 0:30'}</span>
+          <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
         </div>
 
       </div>

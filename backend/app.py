@@ -220,6 +220,129 @@ def fetch_duckduckgo_answer(query: str) -> Optional[dict]:
         logger.warning(f"DuckDuckGo Instant Answer API failed: {e}")
         return None
 
+def fetch_github_repos(query: str) -> list:
+    """Fetch live repository signals from GitHub API."""
+    try:
+        clean_q = sanitize_input(query)
+        url = f"https://api.github.com/search/repositories?q={urllib.parse.quote(clean_q)}&sort=stars&order=desc"
+        req = urllib.request.Request(
+            url, 
+            headers={
+                'User-Agent': 'DevPulse/1.0 (contact@devpulse.app)',
+                'Accept': 'application/vnd.github.v3+json'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.loads(response.read().decode('utf-8'))
+        
+        results = []
+        for idx, item in enumerate(data.get("items", [])[:10]):
+            owner = item.get("owner", {}).get("login", "github")
+            results.append({
+                "id": f"git-{item.get('id', idx)}",
+                "source": "github",
+                "title": f"{item.get('name')}: {item.get('description') or 'Open source codebase'}",
+                "url": ensure_absolute_url(item.get("html_url") or "https://github.com"),
+                "published_at": (item.get("updated_at") or "Recent").split("T")[0],
+                "score": item.get("stargazers_count") or 0,
+                "comments": item.get("forks_count") or 0,
+                "summary": sanitize_input(item.get("description") or f"Active codebase hosted on GitHub developed by {owner}."),
+                "author": sanitize_input(owner),
+                "relevance_score": max(50, 96 - idx),
+                "cluster": 2
+            })
+        return results
+    except Exception as e:
+        logger.warning(f"Failed to fetch GitHub repos: {e}")
+        return []
+
+def fetch_hackernews_stories(query: str) -> list:
+    """Fetch live discussion signals from Hacker News API."""
+    try:
+        clean_q = sanitize_input(query)
+        url = f"https://hn.algolia.com/api/v1/search?query={urllib.parse.quote(clean_q)}&tags=story"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            
+        results = []
+        for idx, hit in enumerate(data.get("hits", [])[:10]):
+            title = hit.get("title")
+            if not title:
+                continue
+            results.append({
+                "id": f"hn-{hit.get('objectID', idx)}",
+                "source": "hackernews",
+                "title": sanitize_input(title),
+                "url": ensure_absolute_url(hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}"),
+                "published_at": (hit.get("created_at") or "Recent").split("T")[0],
+                "score": hit.get("points") or 0,
+                "comments": hit.get("num_comments") or 0,
+                "summary": sanitize_input(f"Community discussion thread analyzing {title} with active developer insights."),
+                "author": sanitize_input(hit.get("author") or "hn_user"),
+                "relevance_score": max(50, 98 - idx),
+                "cluster": 1
+            })
+        return results
+    except Exception as e:
+        logger.warning(f"Failed to fetch Hacker News stories: {e}")
+        return []
+
+def fetch_polymarket_odds(query: str) -> list:
+    """Fetch live prediction market metrics from Polymarket Gamma API."""
+    try:
+        clean_q = sanitize_input(query)
+        url = f"https://gamma-api.polymarket.com/events?q={urllib.parse.quote(clean_q)}&active=true"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            
+        results = []
+        for idx, item in enumerate(data[:8]):
+            title = item.get("title")
+            if not title:
+                continue
+            slug = item.get("slug", "")
+            event_url = f"https://polymarket.com/event/{slug}" if slug else "https://polymarket.com"
+            
+            markets = item.get("markets", [])
+            max_volume = 0.0
+            yes_probability = 50
+            
+            for m in markets:
+                try:
+                    vol = float(m.get("volume", 0) or 0.0)
+                    max_volume = max(max_volume, vol)
+                except (ValueError, TypeError):
+                    pass
+                outcomes = m.get("outcomes", [])
+                outcome_prices = m.get("outcomePrices", [])
+                if len(outcomes) >= 2 and len(outcome_prices) >= 2:
+                    try:
+                        yes_probability = round(float(outcome_prices[0]) * 100)
+                    except (ValueError, TypeError):
+                        pass
+            
+            summary = f"Active prediction contract trading. YES contracts trading at {yes_probability}% probability. Total volume traded: ${max_volume:,.2f}."
+            
+            results.append({
+                "id": f"poly-{item.get('id', idx)}",
+                "source": "polymarket",
+                "title": sanitize_input(title),
+                "url": ensure_absolute_url(event_url),
+                "published_at": (item.get("publishedDate") or "Recent").split("T")[0],
+                "score": yes_probability,
+                "comments": len(markets),
+                "summary": sanitize_input(summary),
+                "author": "Polymarket Odds",
+                "relevance_score": max(50, 95 - idx),
+                "cluster": 3
+            })
+        return results
+    except Exception as e:
+        logger.warning(f"Failed to fetch Polymarket events: {e}")
+        return []
+
 def fetch_google_news(query: str) -> list:
     """Fetch and parse Google News XML RSS feed directly to broaden source scope."""
     clean_q = sanitize_input(query)
@@ -432,8 +555,8 @@ async def search_news(q: str = Query(..., description="Query topic"), sources: O
             key_takeaways.append(f"Factual overview details for '{clean_q}' were dynamically compiled.")
             
         key_takeaways.extend([
-            f"Search signals aggregated from Google News live RSS indices.",
-            f"Community interest metrics calculated via volume and relevance weights."
+            f"Developer interest and repo velocity indexed live from GitHub API.",
+            f"Prediction odds and market betting contracts queried from Polymarket."
         ])
         
         # Add Wikipedia as top signal if found
@@ -452,8 +575,23 @@ async def search_news(q: str = Query(..., description="Query topic"), sources: O
                 "cluster": 1
             })
             
-        # Add Google News
+        # Fetch from HN, GitHub, Polymarket, and Google News
+        hn_data = fetch_hackernews_stories(clean_q)
+        git_data = fetch_github_repos(clean_q)
+        poly_data = fetch_polymarket_odds(clean_q)
         gnews_data = fetch_google_news(clean_q)
+        
+        # Filter results by requested sources if active
+        if sources:
+            src_list = [s.strip().lower() for s in sources.split(",") if s.strip()]
+            hn_data = [item for item in hn_data if any(s in item["source"].lower() for s in src_list)]
+            git_data = [item for item in git_data if any(s in item["source"].lower() for s in src_list)]
+            poly_data = [item for item in poly_data if any(s in item["source"].lower() for s in src_list)]
+            gnews_data = [item for item in gnews_data if any(s in item["source"].lower() for s in src_list)]
+            
+        formatted_sources.extend(hn_data)
+        formatted_sources.extend(git_data)
+        formatted_sources.extend(poly_data)
         formatted_sources.extend(gnews_data)
 
     # Perform Jaccard deduplication to group duplicate text cards

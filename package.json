@@ -1,0 +1,14 @@
+{
+  "name": "devpulse",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start:frontend": "npm --prefix frontend run dev",
+    "start:backend": "python backend/app.py",
+    "start:fullstack": "concurrently \"npm run start:frontend\" \"npm run start:backend\"",
+    "install:all": "npm install && npm --prefix frontend install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

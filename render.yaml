@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: devpulse
+    runtime: docker
+    plan: free # Render's free tier plan
+    envVars:
+      - key: DEVPULSE_SECRET_KEY
+        generateValue: true # Generates a secure random key for signature verification
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: 8000
